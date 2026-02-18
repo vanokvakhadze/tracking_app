@@ -5,11 +5,12 @@ import CoreLocation
 
 struct GoogleMapView: UIViewRepresentable {
     @ObservedObject var locationManager: LocationManager
-    let places: [MapPoint]
-    @Binding var selectedPlace: MapPoint?
+    @ObservedObject var mapVM: MapVM
     @Binding var routePolylineEncoded: String?
     @Binding var isNavigating: Bool
     @Binding var focusPlaceId: String?
+    @Binding var shouldCenter: Bool
+
 
 
 
@@ -26,27 +27,30 @@ struct GoogleMapView: UIViewRepresentable {
         let mapView = GMSMapView(options: options)
         mapView.delegate = context.coordinator
         mapView.isMyLocationEnabled = true
-        mapView.settings.myLocationButton = true
         mapView.settings.compassButton = true
+        mapView.settings.myLocationButton = false   
+        mapView.settings.scrollGestures = true
+        mapView.settings.zoomGestures = true
+        mapView.settings.rotateGestures = true
+        mapView.settings.tiltGestures = true
         return mapView
     }
+    
+
 
     func updateUIView(_ mapView: GMSMapView, context: Context) {
 
         let allowed = locationManager.status == .authorizedWhenInUse ||
                       locationManager.status == .authorizedAlways
 
-        
         mapView.isMyLocationEnabled = allowed && !isNavigating
         mapView.settings.myLocationButton = allowed && !isNavigating
-
 
         if allowed,
            let loc = locationManager.location,
            !context.coordinator.didInitialSetup {
 
             context.coordinator.didInitialSetup = true
-
             mapView.animate(to: GMSCameraPosition(
                 latitude: loc.coordinate.latitude,
                 longitude: loc.coordinate.longitude,
@@ -54,77 +58,82 @@ struct GoogleMapView: UIViewRepresentable {
             ))
         }
 
-        context.coordinator.syncPlaceMarkers(on: mapView, places: places, selectedId: selectedPlace?.id)
-
+        context.coordinator.syncPlaceMarkers(
+            on: mapView,
+            places: mapVM.places,
+            selectedId: mapVM.selectedPlace?.id
+        )
 
         if context.coordinator.lastPolyline != routePolylineEncoded {
             context.coordinator.drawRoute(on: mapView, encodedPolyline: routePolylineEncoded)
         }
         
-        if let user = locationManager.location?.coordinate {
+        if shouldCenter, let user = locationManager.location?.coordinate {
+            context.coordinator.centerOnUser(mapView, user: user, heading: locationManager.heading, isNavigating: isNavigating)
+            DispatchQueue.main.async { self.shouldCenter = false }
+        }
 
+        guard let user = locationManager.location?.coordinate else { return }
+
+        if isNavigating {
             context.coordinator.followUserIfNeeded(
                 on: mapView,
                 user: user,
-                heading: locationManager.heading,   // ✅ PASS HEADING
-                isNavigating: isNavigating
+                heading: locationManager.heading,
+                isNavigating: true
             )
-            
+
             context.coordinator.updateUserMarker(
-                    on: mapView,
-                    coordinate: user,
-                    heading: locationManager.heading,
-                    isNavigating: isNavigating
-                )
-            
-            context.coordinator.syncPlaceMarkers(
                 on: mapView,
-                places: places,
-                selectedId: selectedPlace?.id          // ✅ NEW
+                coordinate: user,
+                heading: locationManager.heading,
+                isNavigating: true
             )
-            
+
+            context.coordinator.updateRouteProgress(user: user)
+
+        } else {
             context.coordinator.focusIfNeeded(
                 on: mapView,
                 placeId: focusPlaceId,
-                places: places
+                places: mapVM.places
+            )
+
+            context.coordinator.updateUserMarker(
+                on: mapView,
+                coordinate: user,
+                heading: locationManager.heading,
+                isNavigating: false
             )
         }
-
     }
 
 }
 
 
-struct DirectionsResponse: Decodable {
-    let status: String
-    let error_message: String?
-    let routes: [Route]
-
-    struct Route: Decodable {
-        let overview_polyline: OverviewPolyline
-    }
-    struct OverviewPolyline: Decodable {
-        let points: String
-    }
-}
 
 
 
 enum DirectionsService {
 
-    static func fetchRoutePolyline(
+    static func fetchRoute(
         origin: CLLocationCoordinate2D,
         destination: CLLocationCoordinate2D,
-        completion: @escaping (String?) -> Void
+        completion: @escaping (RouteInfo?) -> Void
     ) {
         let key = "AIzaSyBVxXerW3VER0l3aZmc30dnulT843eAEKQ"
 
-        // Use URLComponents to avoid bad URL encoding
         var components = URLComponents(string: "https://maps.googleapis.com/maps/api/directions/json")!
         components.queryItems = [
             .init(name: "origin", value: "\(origin.latitude),\(origin.longitude)"),
             .init(name: "destination", value: "\(destination.latitude),\(destination.longitude)"),
             .init(name: "mode", value: "driving"),
+            .init(name: "alternatives", value: "true"),
+            .init(name: "departure_time", value: "now"),
+            .init(name: "traffic_model", value: "best_guess"),
+            .init(name: "language", value: "en"),
+            .init(name: "units", value: "metric"),
+            .init(name: "region", value: "ge"),
             .init(name: "key", value: key)
         ]
 
@@ -134,9 +143,7 @@ enum DirectionsService {
             return
         }
 
-        print("➡️ Directions URL:", url.absoluteString)
-
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        URLSession.shared.dataTask(with: url) { data, _, error in
             if let error {
                 print("❌ Directions network error:", error.localizedDescription)
                 completion(nil)
@@ -152,16 +159,28 @@ enum DirectionsService {
             do {
                 let decoded = try JSONDecoder().decode(DirectionsResponse.self, from: data)
 
-                if decoded.status != "OK" {
+                guard decoded.status == "OK" else {
                     print("❌ Directions status:", decoded.status)
                     print("❌ Directions error_message:", decoded.error_message ?? "nil")
                     completion(nil)
                     return
                 }
 
-                let points = decoded.routes.first?.overview_polyline.points
-                print("✅ Polyline received:", points?.prefix(40) ?? "nil")
-                completion(points)
+                guard let route = decoded.routes.first,
+                      let leg = route.legs.first else {
+                    completion(nil)
+                    return
+                }
+
+                let duration = leg.duration_in_traffic ?? leg.duration
+
+                completion(RouteInfo(
+                    polyline: route.overview_polyline.points,
+                    durationText: duration.text,
+                    durationSeconds: duration.value,
+                    distanceText: leg.distance.text,
+                    distanceMeters: CLLocationDistance(leg.distance.value)
+                ))
 
             } catch {
                 print("❌ Directions decode error:", error)
@@ -182,6 +201,13 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
     private var placeByMarkerId: [ObjectIdentifier: MapPoint] = [:]
     private var lastRouteBounds: GMSCoordinateBounds?
     private var lastFocusedId: String?
+    private var routePath: GMSPath?
+    private var traveledPolyline: GMSPolyline?
+    private var remainingPolyline: GMSPolyline?
+    private var lastFocusedPlaceId: String?
+    private var isFollowingUser = true
+
+
 
     var didInitialSetup = false
     private var destinationMarker: GMSMarker?
@@ -212,7 +238,6 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
         let newIds = Set(places.map(\.id))
         let oldIds = Set(markersById.keys)
 
-        // Remove deleted markers
         for id in oldIds.subtracting(newIds) {
             if let marker = markersById[id] {
                 marker.map = nil
@@ -221,12 +246,10 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             markersById.removeValue(forKey: id)
         }
 
-        // Add / Update markers
         for place in places {
 
             let isSelected = (place.id == selectedId)
 
-            // ✅ Different size for selected marker
             let icon = UIImage.mapSymbol(
                 name: place.systemIcon,
                 pointSize: isSelected ? 26 : 20,
@@ -247,7 +270,7 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             marker.position = place.coordinate
             marker.title = place.title
             marker.icon = icon
-            marker.zIndex = isSelected ? 1000 : 0   // ✅ bring selected to front
+            marker.zIndex = isSelected ? 1000 : 0
             marker.map = mapView
 
             placeByMarkerId[ObjectIdentifier(marker)] = place
@@ -258,33 +281,122 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
     func drawRoute(on mapView: GMSMapView, encodedPolyline: String?) {
         lastPolyline = encodedPolyline
 
-        routePolyline?.map = nil
+        traveledPolyline?.map = nil
+        remainingPolyline?.map = nil
+        routePath = nil
         lastRouteBounds = nil
 
         guard let encodedPolyline,
-              let path = GMSPath(fromEncodedPath: encodedPolyline) else { return }
+              let path = GMSPath(fromEncodedPath: encodedPolyline),
+              path.count() > 1 else { return }
 
-        let polyline = GMSPolyline(path: path)
-        polyline.strokeWidth = 5
-        polyline.geodesic = true
-        polyline.map = mapView
-        routePolyline = polyline
+        routePath = path
+
+        let remaining = GMSPolyline(path: path)
+        remaining.strokeWidth = 6
+        remaining.geodesic = true
+        remaining.map = mapView
+        remainingPolyline = remaining
+
+        let traveled = GMSPolyline(path: GMSMutablePath())
+        traveled.strokeWidth = 6
+        traveled.geodesic = true
+        traveled.map = mapView
+        traveledPolyline = traveled
 
         let bounds = GMSCoordinateBounds(path: path)
         lastRouteBounds = bounds
         mapView.animate(with: GMSCameraUpdate.fit(bounds, withPadding: 90))
     }
+    
+    func updateRouteProgress(user: CLLocationCoordinate2D) {
+        guard let path = routePath else { return }
+
+        let count = Int(path.count())
+        guard count > 1 else { return }
+
+        var bestIndex = 0
+        var bestDist = CLLocationDistance.greatestFiniteMagnitude
+
+        for i in 0..<count {
+            let c = path.coordinate(at: UInt(i))
+            let d = CLLocation(latitude: user.latitude, longitude: user.longitude)
+                .distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+            if d < bestDist {
+                bestDist = d
+                bestIndex = i
+            }
+        }
+
+        let traveled = GMSMutablePath()
+        if bestIndex > 0 {
+            for i in 0...bestIndex {
+                traveled.add(path.coordinate(at: UInt(i)))
+            }
+        }
+
+        let remaining = GMSMutablePath()
+        for i in bestIndex..<count {
+            remaining.add(path.coordinate(at: UInt(i)))
+        }
+
+        traveledPolyline?.path = traveled
+        remainingPolyline?.path = remaining
+
+        let remainingMeters = pathDistanceMeters(remaining)
+        DispatchQueue.main.async {
+            self.parent.mapVM.updateRemaining(distanceMeters: remainingMeters)
+        }
+    }
+
+    
+    func isOffRoute(user: CLLocationCoordinate2D, thresholdMeters: Double = 40) -> Bool {
+        guard let path = routePath else { return false }
+
+        var bestDist = CLLocationDistance.greatestFiniteMagnitude
+        for i in 0..<path.count() {
+            let c = path.coordinate(at: i)
+            let d = CLLocation(latitude: user.latitude, longitude: user.longitude)
+                .distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
+            bestDist = min(bestDist, d)
+        }
+        return bestDist > thresholdMeters
+    }
+    
+    func centerOnUser(_ mapView: GMSMapView,
+                      user: CLLocationCoordinate2D,
+                      heading: CLLocationDirection,
+                      isNavigating: Bool) {
+
+        isFollowingUser = true  // ✅ re-enable follow mode
+
+        let camera = GMSCameraPosition(
+            target: user,
+            zoom: isNavigating ? 17 : 15,
+            bearing: isNavigating ? heading : 0,
+            viewingAngle: isNavigating ? 45 : 0
+        )
+        mapView.animate(with: GMSCameraUpdate.setCamera(camera))
+    }
+
+
 
 
     func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
         if let place = placeByMarkerId[ObjectIdentifier(marker)] {
                 DispatchQueue.main.async {
-                    self.parent.selectedPlace = place
+                    self.parent.mapVM.selectedPlace = place
                 }
                 return true
             }
 
             return false
+    }
+    
+    func mapView(_ mapView: GMSMapView, willMove gesture: Bool) {
+        if gesture {
+            isFollowingUser = false   // user dragged/zoomed => stop auto-follow
+        }
     }
     
     func updateUserMarker(on mapView: GMSMapView,
@@ -317,14 +429,41 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             userMarker?.icon = icon
         }
 
-        // ✅ rotate marker (icon rotates, not whole map)
         userMarker?.rotation = heading
         userMarker?.isFlat = true
     }
-
     
-    func followUserIfNeeded(on mapView: GMSMapView, user: CLLocationCoordinate2D, heading: CLLocationDirection, isNavigating: Bool) {
-        guard isNavigating else { return }
+    private func pathDistanceMeters(_ path: GMSPath?) -> CLLocationDistance {
+        guard let path, path.count() > 1 else { return 0 }
+
+        var total: CLLocationDistance = 0
+        let n = Int(path.count())
+
+        for i in 0..<(n - 1) {
+            let a = path.coordinate(at: UInt(i))
+            let b = path.coordinate(at: UInt(i + 1))
+
+            total += CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        }
+        return total
+    }
+
+
+    func focusSelectedPlaceIfNeeded(on mapView: GMSMapView, selected: MapPoint?, isNavigating: Bool) {
+        guard !isNavigating else { return }
+        guard let selected else { return }
+        guard selected.id != lastFocusedPlaceId else { return }
+
+        lastFocusedPlaceId = selected.id
+        mapView.animate(with: GMSCameraUpdate.setTarget(selected.coordinate, zoom: 14))
+    }
+    
+    func followUserIfNeeded(on mapView: GMSMapView,
+                            user: CLLocationCoordinate2D,
+                            heading: CLLocationDirection,
+                            isNavigating: Bool) {
+        guard isNavigating, isFollowingUser else { return }
 
         let camera = GMSCameraPosition(
             target: user,
@@ -332,9 +471,9 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             bearing: heading,
             viewingAngle: 45
         )
-
         mapView.animate(with: GMSCameraUpdate.setCamera(camera))
     }
+
     
     
     func focusIfNeeded(on mapView: GMSMapView, placeId: String?, places: [MapPoint]) {

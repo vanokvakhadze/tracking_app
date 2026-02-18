@@ -280,6 +280,7 @@
 				INFOPLIST_FILE = Wtracking/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "wee ned your location to receive right information for your location";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "We need your to show your position on the map";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to show your position on the map";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -314,6 +315,7 @@
 				INFOPLIST_FILE = Wtracking/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "wee ned your location to receive right information for your location";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "We need your to show your position on the map";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to show your position on the map";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

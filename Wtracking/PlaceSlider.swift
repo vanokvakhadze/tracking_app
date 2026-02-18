@@ -7,122 +7,90 @@
 
 import SwiftUI
 
-struct LocationDetails<Content: View, T: Identifiable>: View {
+struct PlaceCarousel: View {
+    let places: [MapPoint]
+    @Binding var selectedIndex: Int
+    let onIndexChanged: (MapPoint) -> Void
+    let onStart: (MapPoint) -> Void
 
-    var list: [T]
-    var content: (T) -> Content
-
-    var spacing: CGFloat
-    var trailingSpace: CGFloat
-
-    @Binding var index: Int
-    let onIndexChanged: (T) -> Void
-
-    @GestureState private var offset: CGFloat = 0
-
-    init(
-        spacing: CGFloat = 15,
-        trailingSpace: CGFloat = 90,
-        index: Binding<Int>,
-        items: [T],
-        onIndexChanged: @escaping (T) -> Void,
-        @ViewBuilder content: @escaping (T) -> Content
-    ) {
-        self.list = items
-        self.spacing = spacing
-        self.trailingSpace = trailingSpace
-        self._index = index
-        self.onIndexChanged = onIndexChanged
-        self.content = content
-    }
+    @State private var scrollID: String?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 16) {
+                    ForEach(Array(places.enumerated()), id: \.element.id) { index, place in
+                        if !place.isStartPoint{
+                            PlaceCard(
+                                place: place,
+                                isSelected: selectedIndex == index,
+                                onSelect: {
+                                    setSelected(index: index, proxy: proxy)
+                                },
+                                onStart: { onStart(place) }
+                            )
+                            .frame(width: 300)
+                            .id(place.id)
+                            .scrollTargetLayout()
+                        }
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 20)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $scrollID, anchor: .center)
+            .onAppear {
+                guard places.indices.contains(selectedIndex) else { return }
+                let id = places[selectedIndex].id
+                scrollID = id
+                onIndexChanged(places[selectedIndex])
 
-        GeometryReader { proxy in
-
-            let availableWidth = proxy.size.width
-
-            let cardWidth = max(availableWidth - trailingSpace, 1)
-            let pageWidth = max(availableWidth - (trailingSpace - spacing), 1)
-            let adjustmentWidth = (trailingSpace / 2) - spacing
-
-            HStack(spacing: spacing) {
-
-                ForEach(list) { item in
-                    content(item)
-                        .frame(width: cardWidth)
+                DispatchQueue.main.async {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
-            .padding(.horizontal, spacing)
-            .offset(x:
-                (CGFloat(index) * -pageWidth)
-                + (index != 0 ? adjustmentWidth : 0)
-                + offset
-            )
-            .gesture(
-                DragGesture()
-                    .updating($offset) { value, state, _ in
-                        state = value.translation.width
+
+            .onChange(of: scrollID) { newID in
+                guard let newID,
+                      let idx = places.firstIndex(where: { $0.id == newID }) else { return }
+
+                if selectedIndex != idx {
+                    selectedIndex = idx
+                    onIndexChanged(places[idx])
+                }
+            }
+
+            .onChange(of: selectedIndex) { newValue in
+                guard places.indices.contains(newValue) else { return }
+                let id = places[newValue].id
+
+                if scrollID != id {
+                    scrollID = id
+                    withAnimation(.easeInOut) {
+                        proxy.scrollTo(id, anchor: .center)
                     }
-                    .onEnded { value in
-
-                        let threshold: CGFloat = pageWidth / 2
-                        var newIndex = index
-
-                        if value.translation.width > threshold {
-                            newIndex -= 1
-                        } else if value.translation.width < -threshold {
-                            newIndex += 1
-                        }
-
-                        newIndex = max(min(newIndex, list.count - 1), 0)
-
-                        withAnimation(.spring()) {
-                            index = newIndex
-                        }
-
-                        onIndexChanged(list[newIndex])
-                    }
-            )
+                }
+            }
         }
-        .animation(.easeInOut, value: offset == 0)
     }
-}
 
-struct StartButton: View {
-    let title: String
-    let action: () -> Void
+    private func setSelected(index: Int, proxy: ScrollViewProxy) {
+        guard places.indices.contains(index) else { return }
+        selectedIndex = index
+        let id = places[index].id
+        scrollID = id
+        onIndexChanged(places[index])
 
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(.black)
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .shadow(radius: 6)
-                .padding(.horizontal, 16)
+        withAnimation(.easeInOut) {
+            proxy.scrollTo(id, anchor: .center)
         }
     }
 }
 
-struct CancelButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text("Cancel Route")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(.white)
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(.red)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .shadow(radius: 6)
-                .padding(.horizontal, 16)
-        }
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
@@ -134,8 +102,6 @@ struct PlaceCard: View {
     let onStart: () -> Void
 
     var body: some View {
-
-
                 GeometryReader { proxy in
                     let size = proxy.size
                     ZStack(alignment: .bottomTrailing){
@@ -143,8 +109,11 @@ struct PlaceCard: View {
                             
                             Rectangle()
                                 .fill(Color.gray.opacity(0.25))
-                                .frame(width: size.width - 20, height: size.height - 100)
-                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                    .frame(
+                                        width: max(size.width - 20, 1),
+                                        height: max(size.height - 100, 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 20))
                             
                             
                             Text(place.title)
@@ -166,37 +135,11 @@ struct PlaceCard: View {
                         .animation(.spring(), value: isSelected)
                         
                     
-                        Button(action: {
-                            
-                        }) {
-                            HStack{
-                                Text("Start")
-                                
-                                
-                                Spacer()
-                                    .frame(width: 12)
-                                
-                                Image(systemName: "location.north.fill")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(.green)
-                                    .frame(maxWidth: 18, maxHeight: 18)
-                                    .background(Color(uiColor: .secondarySystemBackground))
-                                    .clipShape(Circle())
-                                    .shadow(color: .green.opacity(0.35), radius: 4)
-                                
-                            }
-                            .padding(10)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(.white)
-                                 
-                            )
-                      
-                            
-                        }
+                        StartButton(title: "", action: onStart)
                                
                     }
-                    
+                    .padding(.top, 20)
+
                     
                     
                 }
