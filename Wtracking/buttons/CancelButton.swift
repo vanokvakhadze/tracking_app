@@ -26,7 +26,6 @@ struct CancelButton: View {
                    } label: {
                        HStack(spacing: 5){
                            Text("Center")
-                               .foregroundStyle(.primary)
                                
                            Image(systemName: "location.fill")
                                .font(.system(size: 16, weight: .bold))
@@ -36,9 +35,14 @@ struct CancelButton: View {
                        }
                        .padding(12)
                    }
+                   .foregroundStyle(.primary)
                    .background(
                        RoundedRectangle(cornerRadius: 12)
-                        .fill(.secondary.opacity(0.7))
+                        .fill(Color(uiColor: .tertiarySystemBackground))
+                   )
+                   .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(lineWidth: 1)
                    )
             }
             

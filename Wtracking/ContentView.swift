@@ -7,9 +7,13 @@
 
 import SwiftUI
 import CoreLocation
+import AVFoundation
 
 struct ContentView: View {
     
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
+
     @StateObject var locationManager = LocationManager()
     @StateObject var mapVM = MapVM()
     @State private var focusPlaceId: String? = "1"
@@ -29,6 +33,7 @@ struct ContentView: View {
                     focusPlaceId: $focusPlaceId,
                     shouldCenter: $shouldCenter
                 )
+                .ignoresSafeArea()
                
              
                 if mapVM.encodedPolyline != nil {
@@ -47,8 +52,8 @@ struct ContentView: View {
                         
                         
                         Button(action: {
-                            mapVM.showPlaceSlider = false
-                            mapVM.finishRecordingDrive()
+                            mapVM.finish()
+                           
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                 goToResult = true
                             }
@@ -75,11 +80,11 @@ struct ContentView: View {
                     onStart: { place in
                         guard let user = locationManager.location?.coordinate else { return }
                         
-                        mapVM.processLocationUpdate(user)
+                        mapVM.processLocationUpdate(user, context: modelContext)
                         
-                        mapVM.startTrackingPlace(place: place, radius: 50)
+                        mapVM.startTrackingPlace(place: place, radius: 50, context: modelContext)
                         
-                        mapVM.setDestination(place.coordinate)
+                        mapVM.setDestination(CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude))
                         mapVM.startRoute()
                         
                         mapVM.isNavigating = true
@@ -98,7 +103,11 @@ struct ContentView: View {
             .navigationDestination(isPresented: $goToResult) {
                     ResultView(mapVM: mapVM)
                 }
+            
+           
             .onAppear {
+                mapVM.cleanupExpiredVisits(context: modelContext)
+
                 if mapVM.selectedPlace == nil, !mapVM.places.isEmpty {
                     mapVM.selectedPlace = mapVM.places[1]
                     mapVM.selectedIndex = 1
@@ -116,8 +125,21 @@ struct ContentView: View {
                     }
                 }
             }
+            .onChange(of: scenePhase) { phase in
+                switch phase {
+                case .active:
+                    mapVM.loadNavigationSession()
+                    mapVM.resumeNavigationIfNeeded(currentLocation: locationManager.location?.coordinate)
+
+                case .inactive, .background:
+                    mapVM.saveNavigationSession()
+
+                default: break
+                }
+            }
+            
             .onReceive(locationManager.$location.compactMap { $0 }) { loc in
-                mapVM.processLocationUpdate(loc.coordinate)
+                mapVM.processLocationUpdate(loc.coordinate, context: modelContext)
             }
         }
     }
@@ -146,12 +168,10 @@ extension UIImage {
             .withTintColor(color, renderingMode: .alwaysOriginal)
         else { return nil }
         
-        // no bg -> just return symbol
         guard let bgColor = backgroundColor else {
             return symbol
         }
         
-        // ✅ force square canvas
         let side = max(symbol.size.width, symbol.size.height) + padding * 2
         let size = CGSize(width: side, height: side)
         let radius = side / 2
@@ -161,12 +181,10 @@ extension UIImage {
         return renderer.image { _ in
             let rect = CGRect(origin: .zero, size: size)
             
-            // ✅ circle background
             let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
             bgColor.setFill()
             path.fill()
             
-            // center symbol
             let origin = CGPoint(
                 x: (side - symbol.size.width) / 2,
                 y: (side - symbol.size.height) / 2
@@ -174,4 +192,51 @@ extension UIImage {
             symbol.draw(at: origin)
         }
     }
-}
+    
+    
+    static func mapAsset(
+        name: String,
+        baseSize: CGFloat = 32,
+        selectedSize: CGFloat = 38,
+        backgroundColor: UIColor = .systemBlue,
+        padding: CGFloat = 6,
+        isSelected: Bool
+    ) -> UIImage? {
+        
+        guard let baseImage = UIImage(named: name) else { return nil }
+        
+        let imageSize = isSelected ? selectedSize : baseSize
+        let imageRect = CGRect(origin: .zero, size: CGSize(width: imageSize, height: imageSize))
+        
+        if !isSelected {
+            return UIGraphicsImageRenderer(size: imageRect.size).image { _ in
+                
+                let circlePath = UIBezierPath(ovalIn: imageRect)
+                circlePath.addClip() // 👈 this makes image circular
+                
+                baseImage.draw(in: imageRect)
+            }
+        }
+        
+        let side = imageSize + padding * 2
+        let canvasSize = CGSize(width: side, height: side)
+        
+        return UIGraphicsImageRenderer(size: canvasSize).image { _ in
+            
+            let rect = CGRect(origin: .zero, size: canvasSize)
+            
+            backgroundColor.withAlphaComponent(0.25).setFill()
+            UIBezierPath(ovalIn: rect).fill()
+            
+            let imageOrigin = CGPoint(x: padding, y: padding)
+            let imageFrame = CGRect(origin: imageOrigin,
+                                    size: CGSize(width: imageSize, height: imageSize))
+            
+            let circlePath = UIBezierPath(ovalIn: imageFrame)
+            circlePath.addClip()
+            
+            baseImage.draw(in: imageFrame)
+        }
+    }
+
+    }

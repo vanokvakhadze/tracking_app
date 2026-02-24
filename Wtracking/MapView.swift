@@ -21,14 +21,13 @@ struct GoogleMapView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> GMSMapView {
         let camera = GMSCameraPosition(latitude: 41.7151, longitude: 44.8271, zoom: 10)
-
         let options = GMSMapViewOptions()
         options.camera = camera
         let mapView = GMSMapView(options: options)
         mapView.delegate = context.coordinator
         mapView.isMyLocationEnabled = true
         mapView.settings.compassButton = true
-        mapView.settings.myLocationButton = false   
+        mapView.settings.myLocationButton = false
         mapView.settings.scrollGestures = true
         mapView.settings.zoomGestures = true
         mapView.settings.rotateGestures = true
@@ -82,29 +81,34 @@ struct GoogleMapView: UIViewRepresentable {
                 heading: locationManager.heading,
                 isNavigating: true
             )
+            
+            let smoothUser = context.coordinator.smooth(user, alpha: 0.25)
+            context.coordinator.updateUserMarker(on: mapView,
+                                                 coordinate: smoothUser,
+                                                 heading: locationManager.heading,
+                                                 isNavigating: true)
 
-            context.coordinator.updateUserMarker(
-                on: mapView,
-                coordinate: user,
-                heading: locationManager.heading,
-                isNavigating: true
-            )
+           
 
-            context.coordinator.updateRouteProgress(user: user)
+            if isNavigating, let user = locationManager.location?.coordinate {
+                context.coordinator.updateRouteProgress(on: mapView, user: user)
+            }
 
         } else {
+            
+            let smoothUser = context.coordinator.smooth(user, alpha: 0.25)
+
             context.coordinator.focusIfNeeded(
                 on: mapView,
                 placeId: focusPlaceId,
                 places: mapVM.places
             )
 
-            context.coordinator.updateUserMarker(
-                on: mapView,
-                coordinate: user,
-                heading: locationManager.heading,
-                isNavigating: false
-            )
+            context.coordinator.updateUserMarker(on: mapView,
+                                                 coordinate: smoothUser,
+                                                 heading: locationManager.heading,
+                                                 isNavigating: false)
+            
         }
     }
 
@@ -206,16 +210,76 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
     private var remainingPolyline: GMSPolyline?
     private var lastFocusedPlaceId: String?
     private var isFollowingUser = true
-
-
-
+    private var lastSelectedId: String?
+    private var iconCache: [String: UIImage] = [:]
+    private var lastRerouteAt: Date?
+    private let rerouteCooldown: TimeInterval = 8
+    private var lastUserUpdateAt: CFTimeInterval = CACurrentMediaTime()
+    private var destinationCoord: CLLocationCoordinate2D?
+    private var isRerouting = false
+    private var smoothedUser: CLLocationCoordinate2D?
     var didInitialSetup = false
     private var destinationMarker: GMSMarker?
-    private var routePolyline: GMSPolyline?
     var lastPolyline: String?
+    private var displayLink: CADisplayLink?
+    private var animFrom: CLLocationCoordinate2D?
+    private var animTo: CLLocationCoordinate2D?
+    private var animStart: CFTimeInterval = 0
+    private var animDuration: CFTimeInterval = 0.8
 
     init(_ parent: GoogleMapView) {
         self.parent = parent
+    }
+    
+    
+    private func startSmoothMove(to coordinate: CLLocationCoordinate2D) {
+        let now = CACurrentMediaTime()
+
+        if animTo == nil {
+            animFrom = coordinate
+            animTo = coordinate
+            animStart = now
+            animDuration = 0.2
+            startDisplayLinkIfNeeded()
+            return
+        }
+
+        animFrom = currentAnimatedCoordinate(now: now) ?? animTo
+        animTo = coordinate
+
+        // duration = დრო რეალურ update-ებს შორის (ეს კლავს “სტეპებს”)
+        let dt = max(now - animStart, 0.15)
+        animStart = now
+        animDuration = min(max(dt, 0.25), 2.5)
+
+        startDisplayLinkIfNeeded()
+    }
+
+    private func startDisplayLinkIfNeeded() {
+        if displayLink != nil { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    @objc private func tick() {
+        let now = CACurrentMediaTime()
+        guard let c = currentAnimatedCoordinate(now: now) else { return }
+
+        // აქ უბრალოდ marker გადაადგილდება
+        userMarker?.position = c
+
+        // თუ გინდა camera-ც იგივე coordinate-ს მიყვეს, აქვე გააკეთე (parent/mapView reference თუ გაქვს)
+    }
+
+    private func currentAnimatedCoordinate(now: CFTimeInterval) -> CLLocationCoordinate2D? {
+        guard let from = animFrom, let to = animTo else { return nil }
+        let t = min(max((now - animStart) / animDuration, 0), 1)
+
+        // Linear interpolation lat/lng-ზე (საკმარისია ქალაქში)
+        let lat = from.latitude + (to.latitude - from.latitude) * t
+        let lng = from.longitude + (to.longitude - from.longitude) * t
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
     }
 
     func ensureDestinationMarker(on mapView: GMSMapView, destination: CLLocationCoordinate2D) {
@@ -229,20 +293,12 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
         }
     }
     
-    func syncPlaceMarkers(
-        on mapView: GMSMapView,
-        places: [MapPoint],
-        selectedId: String?
-    ) {
-
+    func syncPlaceMarkers(on mapView: GMSMapView, places: [MapPoint], selectedId: String?) {
         let newIds = Set(places.map(\.id))
         let oldIds = Set(markersById.keys)
 
         for id in oldIds.subtracting(newIds) {
-            if let marker = markersById[id] {
-                marker.map = nil
-                placeByMarkerId.removeValue(forKey: ObjectIdentifier(marker))
-            }
+            markersById[id]?.map = nil
             markersById.removeValue(forKey: id)
         }
 
@@ -250,32 +306,43 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
 
             let isSelected = (place.id == selectedId)
 
-            let icon = UIImage.mapSymbol(
-                name: place.systemIcon,
-                pointSize: isSelected ? 26 : 20,
-                color: place.color,
-                backgroundColor: .white,
-                padding: isSelected ? 12 : 10
-            )
+            let imageName = place.imageName
+            let cacheKey = "\(imageName)|\(isSelected)"
 
-            let marker: GMSMarker
+            let icon: UIImage? = {
+                if let cached = iconCache[cacheKey] { return cached }
+                let img = UIImage.mapAsset(
+                    name: imageName,
+                    baseSize: 26,
+                    selectedSize: 32,
+                    backgroundColor: .systemBlue,
+                    padding: 6,
+                    isSelected: isSelected
+                )
+                if let img { iconCache[cacheKey] = img }
+                return img
+            }()
 
-            if let existing = markersById[place.id] {
-                marker = existing
-            } else {
-                marker = GMSMarker()
-                markersById[place.id] = marker
+            let marker = markersById[place.id] ?? {
+                let m = GMSMarker()
+                markersById[place.id] = m
+                m.map = mapView
+                return m
+            }()
+
+            marker.position = CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
+            marker.title = place.title
+
+            if marker.icon !== icon {
+                marker.icon = icon
             }
 
-            marker.position = place.coordinate
-            marker.title = place.title
-            marker.icon = icon
             marker.zIndex = isSelected ? 1000 : 0
-            marker.map = mapView
-
-            placeByMarkerId[ObjectIdentifier(marker)] = place
         }
+
+        lastSelectedId = selectedId
     }
+
 
 
     func drawRoute(on mapView: GMSMapView, encodedPolyline: String?) {
@@ -292,25 +359,28 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
 
         routePath = path
 
+      
+        destinationCoord = path.coordinate(at: UInt(path.count() - 1))
+
         let remaining = GMSPolyline(path: path)
         remaining.strokeWidth = 6
         remaining.geodesic = true
         remaining.map = mapView
         remainingPolyline = remaining
 
-        let traveled = GMSPolyline(path: GMSMutablePath())
-        traveled.strokeWidth = 6
-        traveled.geodesic = true
-        traveled.map = mapView
-        traveledPolyline = traveled
-
         let bounds = GMSCoordinateBounds(path: path)
         lastRouteBounds = bounds
         mapView.animate(with: GMSCameraUpdate.fit(bounds, withPadding: 90))
     }
-    
-    func updateRouteProgress(user: CLLocationCoordinate2D) {
+
+
+    func updateRouteProgress(on mapView: GMSMapView, user: CLLocationCoordinate2D) {
         guard let path = routePath else { return }
+
+        if isOffRoute(user: user, thresholdMeters: 45) {
+            reroute(from: user, on: mapView)
+            return
+        }
 
         let count = Int(path.count())
         guard count > 1 else { return }
@@ -328,39 +398,70 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             }
         }
 
-        let traveled = GMSMutablePath()
-        if bestIndex > 0 {
-            for i in 0...bestIndex {
-                traveled.add(path.coordinate(at: UInt(i)))
-            }
-        }
-
         let remaining = GMSMutablePath()
         for i in bestIndex..<count {
             remaining.add(path.coordinate(at: UInt(i)))
         }
 
-        traveledPolyline?.path = traveled
         remainingPolyline?.path = remaining
 
+        // ✅ distance update
         let remainingMeters = pathDistanceMeters(remaining)
-        DispatchQueue.main.async {
-            self.parent.mapVM.updateRemaining(distanceMeters: remainingMeters)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            parent.mapVM.updateRemaining(distanceMeters: remainingMeters)
         }
     }
 
-    
-    func isOffRoute(user: CLLocationCoordinate2D, thresholdMeters: Double = 40) -> Bool {
-        guard let path = routePath else { return false }
+    private func reroute(from user: CLLocationCoordinate2D, on mapView: GMSMapView) {
+        guard !isRerouting else { return }
+        if let last = lastRerouteAt, Date().timeIntervalSince(last) < rerouteCooldown { return }
+        lastRerouteAt = Date()
 
-        var bestDist = CLLocationDistance.greatestFiniteMagnitude
-        for i in 0..<path.count() {
-            let c = path.coordinate(at: i)
-            let d = CLLocation(latitude: user.latitude, longitude: user.longitude)
-                .distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude))
-            bestDist = min(bestDist, d)
+        guard let dest = destinationCoord else { return }
+
+        isRerouting = true
+
+        DirectionsService.fetchRoute(origin: user, destination: dest) { [weak self] info in
+            guard let self, let info else { return }
+            DispatchQueue.main.async {
+                self.isRerouting = false
+
+                self.parent.routePolylineEncoded = info.polyline
+
+                self.drawRoute(on: mapView, encodedPolyline: info.polyline)
+
+                self.parent.mapVM.initialRouteDistanceMeters = info.distanceMeters
+                self.parent.mapVM.initialRouteDurationSeconds = info.durationSeconds
+
+                self.parent.mapVM.remainingDistanceText = info.distanceText
+                self.parent.mapVM.remainingETAText = info.durationText
+            }
         }
-        return bestDist > thresholdMeters
+    }
+    private func tailStartIndex(for path: GMSPath, endIndex: Int, tailMeters: CLLocationDistance) -> Int {
+        guard endIndex > 0 else { return 0 }
+
+        var meters: CLLocationDistance = 0
+        var i = endIndex
+
+        while i > 0 && meters < tailMeters {
+            let a = path.coordinate(at: UInt(i))
+            let b = path.coordinate(at: UInt(i - 1))
+            meters += CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+            i -= 1
+        }
+
+        return max(0, i)
+    }
+
+    
+    func isOffRoute(user: CLLocationCoordinate2D, thresholdMeters: Double = 45) -> Bool {
+        guard let path = routePath else { return false }
+        // ✅ checks distance to path (segments), not only vertices
+        let onPath = GMSGeometryIsLocationOnPathTolerance(user, path, true, thresholdMeters)
+        return !onPath
     }
     
     func centerOnUser(_ mapView: GMSMapView,
@@ -368,7 +469,7 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
                       heading: CLLocationDirection,
                       isNavigating: Bool) {
 
-        isFollowingUser = true  // ✅ re-enable follow mode
+        isFollowingUser = true  
 
         let camera = GMSCameraPosition(
             target: user,
@@ -395,7 +496,7 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
     
     func mapView(_ mapView: GMSMapView, willMove gesture: Bool) {
         if gesture {
-            isFollowingUser = false   // user dragged/zoomed => stop auto-follow
+            isFollowingUser = false   
         }
     }
     
@@ -415,23 +516,38 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             pointSize: 24,
             color: .systemBlue,
             backgroundColor: .white,
-            padding: 12            
+            padding: 12
         )
 
         if userMarker == nil {
             let m = GMSMarker(position: coordinate)
             m.icon = icon
             m.groundAnchor = CGPoint(x: 0.5, y: 0.5)
+            m.isFlat = true
             m.map = mapView
             userMarker = m
-        } else {
-            userMarker?.position = coordinate
-            userMarker?.icon = icon
+            lastUserUpdateAt = CACurrentMediaTime()
+            return
         }
 
+        let now = CACurrentMediaTime()
+        let dt = now - lastUserUpdateAt
+        lastUserUpdateAt = now
+ 
+
+        let duration = min(max(dt, 0.15), 2.5)
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
+
+        startSmoothMove(to: coordinate)
         userMarker?.rotation = heading
-        userMarker?.isFlat = true
+        userMarker?.icon = icon
+
+        CATransaction.commit()
     }
+
     
     private func pathDistanceMeters(_ path: GMSPath?) -> CLLocationDistance {
         guard let path, path.count() > 1 else { return 0 }
@@ -456,7 +572,7 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
         guard selected.id != lastFocusedPlaceId else { return }
 
         lastFocusedPlaceId = selected.id
-        mapView.animate(with: GMSCameraUpdate.setTarget(selected.coordinate, zoom: 14))
+        mapView.animate(with: GMSCameraUpdate.setTarget(CLLocationCoordinate2D(latitude: selected.latitude, longitude: selected.longitude), zoom: 14))
     }
     
     func followUserIfNeeded(on mapView: GMSMapView,
@@ -465,6 +581,10 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
                             isNavigating: Bool) {
         guard isNavigating, isFollowingUser else { return }
 
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.35)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
+
         let camera = GMSCameraPosition(
             target: user,
             zoom: 17,
@@ -472,6 +592,20 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
             viewingAngle: 45
         )
         mapView.animate(with: GMSCameraUpdate.setCamera(camera))
+
+        CATransaction.commit()
+    }
+    
+     func smooth(_ new: CLLocationCoordinate2D, alpha: Double = 0.25) -> CLLocationCoordinate2D {
+        guard let s = smoothedUser else {
+            smoothedUser = new
+            return new
+        }
+        let lat = s.latitude + (new.latitude - s.latitude) * alpha
+        let lon = s.longitude + (new.longitude - s.longitude) * alpha
+        let out = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        smoothedUser = out
+        return out
     }
 
     
@@ -482,6 +616,6 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
 
         lastFocusedId = placeId
 
-        mapView.animate(with: GMSCameraUpdate.setTarget(p.coordinate, zoom: 14))
+        mapView.animate(with: GMSCameraUpdate.setTarget(CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude), zoom: 14))
     }
 }

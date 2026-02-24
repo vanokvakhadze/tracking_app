@@ -107,12 +107,13 @@ struct PlaceCard: View {
                     ZStack(alignment: .bottomTrailing){
                         VStack(alignment: .leading, spacing: 10) {
                             
-                            Rectangle()
-                                .fill(Color.gray.opacity(0.25))
-                                    .frame(
+                            Image(place.imageName)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(
                                         width: max(size.width - 20, 1),
                                         height: max(size.height - 100, 1)
-                                    )
+                                )
                                     .clipShape(RoundedRectangle(cornerRadius: 20))
                             
                             
@@ -120,7 +121,7 @@ struct PlaceCard: View {
                                 .font(.system(size: 20, weight: .bold))
                                 .foregroundStyle(.primary)
                             
-                            Text("\(place.coordinate.latitude), \(place.coordinate.longitude)")
+                            Text("\(place.adress)")
                                 .font(.system(size: 14))
                                 .foregroundStyle(.secondary)
                             

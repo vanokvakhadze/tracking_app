@@ -9,15 +9,37 @@
 import Foundation
 import MapKit
 import CoreLocation
+import SwiftData
 
 
-struct MapPoint: Identifiable {
-    var id: String          // stable id (UUID string or your own)
-    let title: String
-    let coordinate: CLLocationCoordinate2D
-    let systemIcon: String
-    let color: UIColor
-    let isStartPoint: Bool
+@Model
+final class MapPoint {
+    @Attribute(.unique) var id: String
+    var title: String
+    var latitude: Double
+    var longitude: Double
+    var isStartPoint: Bool
+    var imageName: String
+    var adress: String
+    var date: Date?
+
+    init(id: String,
+         title: String,
+         latitude: Double,
+         longitude: Double ,
+         isStartPoint: Bool,
+         imageName: String,
+         adress: String,
+         lastDate: Date? = nil) {
+        self.id = id
+        self.title = title
+        self.latitude =  latitude
+        self.longitude =  longitude
+        self.isStartPoint = isStartPoint
+        self.imageName = imageName
+        self.adress = adress
+        self.date = lastDate
+    }
 }
 
 
@@ -60,6 +82,7 @@ struct DrivenRoute: Identifiable, Codable {
     let id: String
     let startedAt: Date
     let finishedAt: Date
+    let expiresAt: Date
     let points: [CodableCoordinate]
 
     var durationSeconds: Int {
@@ -77,4 +100,19 @@ struct CodableCoordinate: Codable {
         self.lat = c.latitude
         self.lng = c.longitude
     }
+}
+struct PlaceStay: Identifiable, Codable {
+    let id: String
+    let title: String
+    let seconds: TimeInterval
+}
+
+
+struct NavigationSession: Codable {
+    var isNavigating: Bool
+    var destinationLat: Double?
+    var destinationLng: Double?
+    var targetPlaceId: String?
+    var targetRadius: Double
+    var encodedPolyline: String?
 }

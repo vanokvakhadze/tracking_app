@@ -7,6 +7,7 @@
 
 import SwiftUI
 import GoogleMaps
+import SwiftData
 
 
 @main
@@ -19,6 +20,7 @@ struct WtrackingApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: PlaceVisitModel.self)
     }
 }
 

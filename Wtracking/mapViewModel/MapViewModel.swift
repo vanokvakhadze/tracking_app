@@ -9,6 +9,7 @@
 import SwiftUI
 import CoreLocation
 import GoogleMaps
+import SwiftData
 
 final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     
@@ -21,11 +22,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 5
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = 1
+        manager.activityType = .automotiveNavigation
+           
         manager.allowsBackgroundLocationUpdates = true
         manager.pausesLocationUpdatesAutomatically = false
-
+           
         manager.requestAlwaysAuthorization()
     }
     
@@ -55,41 +58,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
 @MainActor
 final class MapVM: ObservableObject {
-    @Published var places: [MapPoint] = [
-        MapPoint(id: "1", title: "Pickup",
-                 coordinate: .init(latitude: 41.842989, longitude: 44.624315),
-                 systemIcon: "checkmark",
-                 color: .white, isStartPoint: true),
-        
-        //41.845177, 44.619449   1.842989, 44.624315
-        //41.845069, 44.619414
-        
-        MapPoint(id: "2", title: "work2",
-                 coordinate: .init(latitude: 41.840083, longitude: 44.662514),
-                 systemIcon: "person", color: .white, isStartPoint: false),
-        
+    @Published var places: [MapPoint] = []
     
-        MapPoint(id: "3", title: "work3",
-                 coordinate: .init(latitude: 41.837977, longitude: 44.705020),
-                 systemIcon: "car", color: .white, isStartPoint: false),
-        
-        
-        MapPoint(id: "4", title: "work4",
-                 coordinate: .init(latitude: 41.942146, longitude: 44.738314),
-                 systemIcon: "car", color: .white, isStartPoint: false),
-//41.942146, 44.738314
-        
-        
-//        MapPoint(id: "5", title: "work5",
-//                 coordinate: .init(latitude: 41.7221, longitude: 44.7356),
-//                 systemIcon: "house", color: .white, isStartPoint: false),
-//        
-//        MapPoint(id: "6", title: "work6",
-//                 coordinate: .init(latitude: 41.7281, longitude: 44.8326),
-//                 systemIcon: "building", color: .white, isStartPoint: false)
-    ]
     @Published var targetPlaceId: String?
-    @Published var lastStayPlaceTitle: [String : String] = [:]
+    @Published var activeVisitId: String?
     @Published var hasArrived: Bool = false
     
     @Published var selectedIndex: Int = 1
@@ -98,10 +70,10 @@ final class MapVM: ObservableObject {
     @Published var destination: CLLocationCoordinate2D?
     @Published var encodedPolyline: String?
     @Published var target: CLLocationCoordinate2D?
-    @Published var targetRadius: CLLocationDistance = 20
+    @Published var targetRadius: CLLocationDistance = 80
     @Published  var isNavigating = false
     @Published  var showPlaceSlider: Bool = true
-    private let resetDistance: CLLocationDistance = 40  // “მეორედ მივიდა” რომ ჩაითვალოს
+    private let resetDistance: CLLocationDistance = 80
     @Published var routeDurationText: String?
     @Published var routeDurationSeconds: Int?
     @Published var routeDistanceText: String?
@@ -113,64 +85,111 @@ final class MapVM: ObservableObject {
     @Published var remainingDistanceText: String = "—"
     @Published var remainingETASeconds: Int?
     @Published var remainingETAText: String = "—"
-    @Published var workIsRunning: Bool = false
-    @Published var workSecondsTotal: TimeInterval = 0
+    @Published var workSecondsTotal: TimeInterval = 0 {
+        didSet {
+            UserDefaults.standard.set(workSecondsTotal, forKey: workSecondsKey)
+        }
+    }
     @Published var drivenRoutes: [DrivenRoute] = []
     @Published var currentTrack: [CLLocationCoordinate2D] = []
-    @Published var isRecording: Bool = false
+    @Published var isRecording: Bool = false {
+        didSet {
+            UserDefaults.standard.set(isRecording, forKey: recordingKey)
+        }
+    }
+    @Published var stays: [PlaceStay] = []
 
     private var trackStartedAt: Date?
    
-    private var initialRouteDurationSeconds: Int?
-    private var initialRouteDistanceMeters: CLLocationDistance?
-    private var workStartedAt: Date? = nil
+    @Published var initialRouteDurationSeconds: Int?
+    @Published var initialRouteDistanceMeters: CLLocationDistance?
     private var canTriggerArrivalToggle: Bool = true
-    
+    private var lastProcessAt: Date = .distantPast
+    private let minProcessInterval: TimeInterval = 0.7
+    private let workSecondsKey = "workSecondsTotalKey"
+    private let navSessionKey = "nav_session_v1"
+    private let recordingKey = "isRecordingKey"
+    private let recordingStartedAtKey = "recordingStartedAtKey"
 
-    func startRecordingDrive() {
-        currentTrack.removeAll(keepingCapacity: true)
-        isRecording = true
-        trackStartedAt = Date()
 
-        if let origin {
-            currentTrack.append(origin)
+    private var workStartedAt: Date? {
+        didSet {
+            if let d = workStartedAt {
+                UserDefaults.standard.set(d, forKey: workStartedKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: workStartedKey)
+            }
         }
+    }
+    private let workStartedKey = "workStartedAtKey"
 
+    var workIsRunning: Bool { workStartedAt != nil }
+
+    
+    func startRecordingDrive() {
+        guard !isRecording else { return }
+        
+        currentTrack.removeAll()
+        isRecording = true
+        
+        trackStartedAt = Date()
+        UserDefaults.standard.set(trackStartedAt, forKey: recordingStartedAtKey)
+        
         print("🎬 RECORD START")
     }
 
     init() {
-           loadRoutesFromDisk()
+        loadNavigationSession()
+        loadRoutesFromDisk()
+           
+           isRecording = UserDefaults.standard.bool(forKey: recordingKey)
+           
+           if let savedDate = UserDefaults.standard.object(forKey: recordingStartedAtKey) as? Date {
+               trackStartedAt = savedDate
+           }
+        workSecondsTotal = UserDefaults.standard.double(forKey: workSecondsKey)
+        workStartedAt = UserDefaults.standard.object(forKey: workStartedKey) as? Date
+    
        }
     
     func finishRecordingDrive() {
         guard isRecording else { return }
+        
         isRecording = false
-
+        
+        UserDefaults.standard.removeObject(forKey: recordingStartedAtKey)
+        
         let started = trackStartedAt ?? Date()
         let finished = Date()
         trackStartedAt = nil
-
+        
         guard currentTrack.count > 1 else {
-            print("⚠️ Not enough points to save route")
             currentTrack.removeAll()
             return
         }
-
+        
         let route = DrivenRoute(
             id: UUID().uuidString,
             startedAt: started,
             finishedAt: finished,
+            expiresAt: Calendar.current.date(byAdding: .day, value: 1, to: finished) ?? finished,
             points: currentTrack.map { CodableCoordinate($0) }
         )
-
+        
         drivenRoutes.append(route)
         currentTrack.removeAll()
-
+        
         saveRoutesToDisk()
-        print("✅ RECORD SAVED. Total routes:", drivenRoutes.count)
     }
     
+    @discardableResult
+    func cleanupExpiredRoutes(now: Date = Date()) -> Bool {
+        let before = drivenRoutes.count
+        drivenRoutes.removeAll { $0.expiresAt <= now }
+        let changed = drivenRoutes.count != before
+        if changed { saveRoutesToDisk() }
+        return changed
+    }
     
     private var routesURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -181,6 +200,7 @@ final class MapVM: ObservableObject {
         do {
             let data = try Data(contentsOf: routesURL)
             drivenRoutes = try JSONDecoder().decode([DrivenRoute].self, from: data)
+            cleanupExpiredRoutes()
             print("📦 Loaded routes:", drivenRoutes.count)
         } catch {
             drivenRoutes = []
@@ -210,15 +230,68 @@ final class MapVM: ObservableObject {
             currentTrack.append(c)
         }
     }
+    
+    func saveNavigationSession() {
+        let session = NavigationSession(
+            isNavigating: isNavigating,
+            destinationLat: destination?.latitude,
+            destinationLng: destination?.longitude,
+            targetPlaceId: targetPlaceId,
+            targetRadius: Double(targetRadius),
+            encodedPolyline: encodedPolyline
+        )
+
+        do {
+            let data = try JSONEncoder().encode(session)
+            UserDefaults.standard.set(data, forKey: navSessionKey)
+        } catch {
+            print("❌ saveNavigationSession error:", error)
+        }
+    }
+
+    func loadNavigationSession() {
+        guard let data = UserDefaults.standard.data(forKey: navSessionKey) else { return }
+        do {
+            let session = try JSONDecoder().decode(NavigationSession.self, from: data)
+
+            isNavigating = session.isNavigating
+            targetPlaceId = session.targetPlaceId
+            targetRadius = session.targetRadius
+            encodedPolyline = session.encodedPolyline
+
+            if let lat = session.destinationLat, let lng = session.destinationLng {
+                destination = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+            } else {
+                destination = nil
+            }
+
+            if let id = session.targetPlaceId,
+               let p = places.first(where: { $0.id == id }) {
+                target = CLLocationCoordinate2D(latitude: p.latitude, longitude: p.longitude)
+            } else {
+                target = nil
+            }
+
+            showPlaceSlider = !session.isNavigating
+            hasArrived = false
+        } catch {
+            print("❌ loadNavigationSession error:", error)
+        }
+    }
+
+    func clearNavigationSession() {
+        UserDefaults.standard.removeObject(forKey: navSessionKey)
+    }
 
     
     
     func handleWorkArrival(user: CLLocationCoordinate2D) {
-        guard let workPlace = places.first(where: { $0.isStartPoint }) else { return }
+        guard let idx = places.firstIndex(where: { $0.isStartPoint }) else { return }
+        let workPlace = places[idx]
 
         let userLoc = CLLocation(latitude: user.latitude, longitude: user.longitude)
-        let placeLoc = CLLocation(latitude: workPlace.coordinate.latitude,
-                                  longitude: workPlace.coordinate.longitude)
+        let placeLoc = CLLocation(latitude: workPlace.latitude,
+                                  longitude: workPlace.longitude)
 
         let dist = userLoc.distance(from: placeLoc)
 
@@ -230,25 +303,55 @@ final class MapVM: ObservableObject {
         guard dist <= targetRadius, canTriggerArrivalToggle else { return }
         canTriggerArrivalToggle = false
 
-        if workIsRunning {
-            if let startedAt = workStartedAt {
-                workSecondsTotal += Date().timeIntervalSince(startedAt)
-            }
-            workStartedAt = nil
-            workIsRunning = false
+        places[idx].date = Date()
 
-            finishRecordingDrive()
-
-            print("🟥 WORK STOP | \(workPlace.title) | total: \(format(workSecondsTotal))")
+        if workStartedAt != nil {
+            stopWork()
+            finishRecordingDriveIfNeeded()
         } else {
-            workStartedAt = Date()
-            workIsRunning = true
-
-            startRecordingDrive()
-            print("🟩 WORK START | \(workPlace.title) | at: \(workStartedAt!)")
+            startWork()
+            startRecordingDriveIfNeeded()
         }
     }
+    
+    func resumeNavigationIfNeeded(currentLocation: CLLocationCoordinate2D?) {
+        guard isNavigating,
+              let destination,
+              let origin = currentLocation else { return }
 
+        requestRoute(origin: origin, destination: destination)
+    }
+ 
+
+    func finish() {
+        if workStartedAt != nil {
+            stopWork()
+        }
+
+        showPlaceSlider = false
+        finishRecordingDriveIfNeeded()
+    }
+    
+    func startWork() {
+        guard workStartedAt == nil else { return }
+        workStartedAt = Date()
+    }
+
+    func stopWork() {
+        guard let startedAt = workStartedAt else { return }
+        workSecondsTotal += Date().timeIntervalSince(startedAt)
+        workStartedAt = nil
+    }
+
+    func startRecordingDriveIfNeeded() {
+        guard !isRecording else { return }
+        startRecordingDrive()
+    }
+
+    func finishRecordingDriveIfNeeded() {
+        guard isRecording else { return }
+        finishRecordingDrive()
+    }
     
     
     
@@ -256,17 +359,21 @@ final class MapVM: ObservableObject {
         destination = coordinate
     }
     
-    func startTrackingPlace(place: MapPoint, radius: CLLocationDistance = 20) {
+    func startTrackingPlace(place: MapPoint, radius: CLLocationDistance = 100, context: ModelContext) {
         guard !place.isStartPoint else { return }
+        UIApplication.shared.isIdleTimerDisabled = true
 
-        target = place.coordinate
+
+
+
+        target =   CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
         targetPlaceId = place.id
         targetRadius = radius
 
         resetTrackingState()
 
         if let origin {
-            processTargetIfNeeded(user: origin)
+            processTargetIfNeeded(user: origin, context: context)
         }
     }
     
@@ -275,7 +382,6 @@ final class MapVM: ObservableObject {
         targetPlaceId = nil
         resetTrackingState()
         distanceToTargetMeters = nil
-        lastStayPlaceTitle = [:]
     }
     
     
@@ -287,11 +393,10 @@ final class MapVM: ObservableObject {
         lastStaySeconds = nil
     }
     
-    private func processTargetIfNeeded(user: CLLocationCoordinate2D) {
+    private func processTargetIfNeeded(user: CLLocationCoordinate2D, context: ModelContext) {
         guard let target else { return }
         guard let id = targetPlaceId else { return }
         guard let place = places.first(where: { $0.id == id }) else { return }
-
         if place.isStartPoint { return }
 
         let userLoc = CLLocation(latitude: user.latitude, longitude: user.longitude)
@@ -304,6 +409,8 @@ final class MapVM: ObservableObject {
             isInsideTarget = true
             enteredAt = Date()
             print("✅ ENTER | \(place.title)")
+
+            saveEnter(place: place, context: context)
         }
 
         if !insideNow && isInsideTarget {
@@ -313,15 +420,77 @@ final class MapVM: ObservableObject {
             let seconds = Date().timeIntervalSince(enteredAt)
             self.enteredAt = nil
 
-            print("🚪 EXIT | \(place.title) | stayed:", format(seconds))
+            stays.append(PlaceStay(id: UUID().uuidString, title: place.title, seconds: seconds))
+
+            print("🚪 EXIT | \(place.title) | stayed:", formatSeconds(Int(seconds)))
+
+            saveExit(context: context)
         }
     }
 
+    
+    
+    func cleanupExpiredVisits(context: ModelContext) {
+        let now = Date()
+        let d = FetchDescriptor<PlaceVisitModel>(
+            predicate: #Predicate { $0.expiresAt <= now }
+        )
+        if let expired = try? context.fetch(d) {
+            expired.forEach { context.delete($0) }
+            try? context.save()
+        }
+        
+        workSecondsTotal = 0.0
+        
+    }
+    
+    func saveEnter(place: MapPoint, context: ModelContext) {
+        cleanupExpiredVisits(context: context)
+
+        let visit = PlaceVisitModel(
+            placeId: place.id,
+            title: place.title,
+            enteredAt: Date()
+        )
+
+        context.insert(visit)
+        try? context.save()
+
+        activeVisitId = visit.id   
+    }
+    
+    func saveExit(context: ModelContext) {
+        guard let activeVisitId else { return }
+
+        let idToFind = activeVisitId
+        let descriptor = FetchDescriptor<PlaceVisitModel>(
+            predicate: #Predicate { $0.id == idToFind }
+        )
+
+        if let visit = try? context.fetch(descriptor).first {
+            let exitDate = Date()
+            let seconds = exitDate.timeIntervalSince(visit.enteredAt)
+
+            visit.exitedAt = exitDate
+            visit.seconds = seconds
+            visit.expiresAt = exitDate.addingTimeInterval(24 * 3600)
+
+            try? context.save()
+            print("💾 Saved exit with seconds:", seconds)
+        }
+
+        self.activeVisitId = nil // ✅ მხოლოდ ვიზიტის reset
+    }
      func format(_ seconds: TimeInterval) -> String {
         let s = Int(seconds)
         let m = s / 60
         let sec = s % 60
-        return m > 0 ? "\(m)m \(sec)s" : ""
+        if m >= 60 {
+             let h = m / 60
+             let mm = m % 60
+             return "\(h)h \(mm)m"
+         }
+         return "\(m)m \(sec)s"
     }
     
     func startRoute() {
@@ -352,22 +521,24 @@ final class MapVM: ObservableObject {
     }
     
     func updateRemaining(distanceMeters: CLLocationDistance) {
-        remainingDistanceMeters = max(distanceMeters, 0)
+     
+            remainingDistanceMeters = max(distanceMeters, 0)
+            
+            if distanceMeters >= 1000 {
+                remainingDistanceText = String(format: "%.1f km", distanceMeters / 1000)
+            } else {
+                remainingDistanceText = "\(Int(distanceMeters)) m"
+            }
+            
+            if let totalDist = initialRouteDistanceMeters,
+               let totalDur = initialRouteDurationSeconds,
+               totalDist > 0 {
+                let ratio = min(max(distanceMeters / totalDist, 0), 1)
+                let eta = Int(Double(totalDur) * ratio)
+                remainingETASeconds = eta
+                remainingETAText = formatSeconds(eta)
+            }
         
-        if distanceMeters >= 1000 {
-            remainingDistanceText = String(format: "%.1f km", distanceMeters / 1000)
-        } else {
-            remainingDistanceText = "\(Int(distanceMeters)) m"
-        }
-        
-        if let totalDist = initialRouteDistanceMeters,
-           let totalDur = initialRouteDurationSeconds,
-           totalDist > 0 {
-            let ratio = min(max(distanceMeters / totalDist, 0), 1)
-            let eta = Int(Double(totalDur) * ratio)
-            remainingETASeconds = eta
-            remainingETAText = formatSeconds(eta)
-        }
     }
     
     private func formatSeconds(_ s: Int) -> String {
@@ -382,6 +553,8 @@ final class MapVM: ObservableObject {
     }
     
     func cancelRoute() {
+        UIApplication.shared.isIdleTimerDisabled = false
+
         encodedPolyline = nil
         destination = nil
         isNavigating = false
@@ -394,19 +567,23 @@ final class MapVM: ObservableObject {
 
         initialRouteDurationSeconds = nil
         initialRouteDistanceMeters = nil
-
         hasArrived = false
+        clearNavigationSession()
     }
     
-    func processLocationUpdate(_ coordinate: CLLocationCoordinate2D) {
+    
+    
+    func processLocationUpdate(_ coordinate: CLLocationCoordinate2D, context: ModelContext) {
+        let now = Date()
+        guard now.timeIntervalSince(lastProcessAt) >= minProcessInterval else { return }
+        lastProcessAt = now
+
         origin = coordinate
 
-        if isRecording {
-            appendTrackPoint(coordinate)
-        }
+        if isRecording { appendTrackPoint(coordinate) }
 
         handleWorkArrival(user: coordinate)
-        processTargetIfNeeded(user: coordinate)
+        processTargetIfNeeded(user: coordinate, context: context)
         checkArrivalAndCancelIfNeeded(user: coordinate)
     }
     
