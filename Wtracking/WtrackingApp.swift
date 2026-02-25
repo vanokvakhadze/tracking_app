@@ -20,7 +20,7 @@ struct WtrackingApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: PlaceVisitModel.self)
+        .modelContainer(for: [MapPoint.self, PlaceVisitModel.self])
     }
 }
 

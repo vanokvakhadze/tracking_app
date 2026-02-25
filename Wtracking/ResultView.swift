@@ -27,15 +27,27 @@ struct ResultView: View {
         ZStack{
             
             VStack(spacing: 20){
-                
-                Text("total working time:  \(mapVM.format(mapVM.workSecondsTotal))")
-                    .bold()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 40)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(lineWidth: 1)
-                    )
+                if mapVM.workIsRunning {
+                    
+                    Text(mapVM.workIsRunning ? "დღის სამუშაო დრო:  \(mapVM.format(mapVM.currentWorkSeconds))" :  "დროის ათვლა დაიწყო : \(mapVM.format(mapVM.currentWorkSeconds))"  )
+                        .bold()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(lineWidth: 1)
+                        )
+                }
+                else {
+                    Text("დროის ათვლა ჯერ არ დაწყებულა")
+                        .bold()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(lineWidth: 1)
+                        )
+                }
                 
                 
                     NavigationLink(destination: MapArchive(mapVM: mapVM)) {
@@ -70,11 +82,11 @@ struct ResultView: View {
                             .font(.system(size: 34))
                             .foregroundStyle(.secondary)
 
-                        Text("No visits yet")
+                        Text("ჩანაწერები ვერ მოიძებნა")
                             .font(.headline)
                             .foregroundStyle(.primary)
 
-                        Text("Start tracking a place and your history will appear here.")
+                        Text("დაიწყე გადადგილება და შენი ისტორია აქ გამოჩნდება.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -94,16 +106,16 @@ struct ResultView: View {
                         VStack{
                             
                             HStack{
-                                Text("Company Name")
+                                Text("კომპანიის სახელი")
                                     .bold()
                                     .frame(maxWidth: .infinity / 3, alignment: .leading)
                                     .padding(.leading, 15)
                                 
-                                Text("Time")
+                                Text("დრო")
                                     .bold()
                                     .frame(maxWidth: .infinity / 3)
                                 
-                                Text("Date")
+                                Text("თარიღი")
                                     .bold()
                                     .frame(maxWidth: .infinity / 3)
                                 

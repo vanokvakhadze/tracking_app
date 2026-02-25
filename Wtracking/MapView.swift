@@ -306,20 +306,32 @@ final class Coordinator: NSObject, GMSMapViewDelegate {
 
             let isSelected = (place.id == selectedId)
 
-            let imageName = place.imageName
-            let cacheKey = "\(imageName)|\(isSelected)"
+            let cacheKey = "\(place.id)|\(isSelected)"   // ✅ უკეთესი key (უნიკალური)
 
             let icon: UIImage? = {
                 if let cached = iconCache[cacheKey] { return cached }
-                let img = UIImage.mapAsset(
-                    name: imageName,
+
+                let baseImage: UIImage? = {
+                    if let path = place.imagePath {
+                        let url = ImageStore.url(for: path)
+                        return UIImage(contentsOfFile: url.path)
+                    } else {
+                        return UIImage(named: place.imageName)
+                    }
+                }()
+
+                guard let baseImage else { return  .checkmark }   // ✅ ახლა შეიძლება nil
+
+                let img = UIImage.mapIcon(
+                    baseImage: baseImage,
                     baseSize: 26,
                     selectedSize: 32,
                     backgroundColor: .systemBlue,
                     padding: 6,
                     isSelected: isSelected
                 )
-                if let img { iconCache[cacheKey] = img }
+
+                iconCache[cacheKey] = img
                 return img
             }()
 

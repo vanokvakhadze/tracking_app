@@ -35,6 +35,7 @@ struct PlaceCarousel: View {
                         }
                     }
                 }
+                .padding(.leading, 15)
                 .scrollTargetLayout()
                 .padding(.horizontal, 20)
             }
@@ -107,15 +108,38 @@ struct PlaceCard: View {
                     ZStack(alignment: .bottomTrailing){
                         VStack(alignment: .leading, spacing: 10) {
                             
-                            Image(place.imageName)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(
+                            
+                            if let path = place.imagePath,
+                               let url = try? FileManager.default.url(
+                                    for: .documentDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil,
+                                    create: false
+                               ).appendingPathComponent(path),
+                               let img = UIImage(contentsOfFile: url.path) {
+
+                                Image(uiImage: img)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(
                                         width: max(size.width - 20, 1),
                                         height: max(size.height - 100, 1)
-                                )
+                                    )
                                     .clipShape(RoundedRectangle(cornerRadius: 20))
-                            
+
+                            } else {
+                                ZStack{
+                                    RoundedRectangle(cornerRadius: 20)
+                                        .fill(.gray.opacity(0.2))
+                                        .frame(
+                                            width: max(size.width - 20, 1),
+                                            height: max(size.height - 100, 1)
+                                        )
+                                      
+                                    Text("Image Is Not Exist")
+                                        .fontWeight(.regular)
+                                }
+                            }
                             
                             Text(place.title)
                                 .font(.system(size: 20, weight: .bold))

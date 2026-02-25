@@ -11,7 +11,6 @@ import MapKit
 import CoreLocation
 import SwiftData
 
-
 @Model
 final class MapPoint {
     @Attribute(.unique) var id: String
@@ -23,25 +22,28 @@ final class MapPoint {
     var adress: String
     var date: Date?
 
+    var imagePath: String?   // ✅ ლოკალური ფაილის სახელი/path
+
     init(id: String,
          title: String,
          latitude: Double,
-         longitude: Double ,
+         longitude: Double,
          isStartPoint: Bool,
          imageName: String,
          adress: String,
-         lastDate: Date? = nil) {
+         lastDate: Date? = nil,
+         imagePath: String? = nil) {
         self.id = id
         self.title = title
-        self.latitude =  latitude
-        self.longitude =  longitude
+        self.latitude = latitude
+        self.longitude = longitude
         self.isStartPoint = isStartPoint
         self.imageName = imageName
         self.adress = adress
         self.date = lastDate
+        self.imagePath = imagePath
     }
 }
-
 
 struct DirectionsResponse: Decodable {
     let status: String
@@ -115,4 +117,39 @@ struct NavigationSession: Codable {
     var targetPlaceId: String?
     var targetRadius: Double
     var encodedPolyline: String?
+}
+
+
+import UIKit
+
+enum ImageStore {
+    static func saveJPEG(_ data: Data, fileName: String) throws -> String {
+        let url = try documentsURL().appendingPathComponent(fileName)
+        try data.write(to: url, options: [.atomic])
+        return fileName
+    }
+
+    static func load(_ fileName: String) -> UIImage? {
+        guard let url = try? documentsURL().appendingPathComponent(fileName) else { return nil }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    static func delete(_ fileName: String) {
+        guard let url = try? documentsURL().appendingPathComponent(fileName) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func documentsURL() throws -> URL {
+        try FileManager.default.url(for: .documentDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil,
+                                    create: true)
+    }
+    
+
+    static func url(for fileName: String) -> URL {
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(fileName)
+        }
+    
 }

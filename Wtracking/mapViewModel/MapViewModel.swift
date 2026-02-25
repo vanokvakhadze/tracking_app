@@ -110,6 +110,8 @@ final class MapVM: ObservableObject {
     private let navSessionKey = "nav_session_v1"
     private let recordingKey = "isRecordingKey"
     private let recordingStartedAtKey = "recordingStartedAtKey"
+    private var didLoadOnce = false
+
 
 
     private var workStartedAt: Date? {
@@ -124,6 +126,14 @@ final class MapVM: ObservableObject {
     private let workStartedKey = "workStartedAtKey"
 
     var workIsRunning: Bool { workStartedAt != nil }
+    
+    var currentWorkSeconds: TimeInterval {
+        if let started = workStartedAt {
+            return Date().timeIntervalSince(started)
+        } else {
+            return workSecondsTotal
+        }
+    }
 
     
     func startRecordingDrive() {
@@ -181,6 +191,13 @@ final class MapVM: ObservableObject {
         
         saveRoutesToDisk()
     }
+    @MainActor
+    func loadPlaces(context: ModelContext) {
+           let descriptor = FetchDescriptor<MapPoint>()
+           if let items = try? context.fetch(descriptor) {
+               self.places = items
+           }
+       }
     
     @discardableResult
     func cleanupExpiredRoutes(now: Date = Date()) -> Bool {
@@ -205,6 +222,78 @@ final class MapVM: ObservableObject {
         } catch {
             drivenRoutes = []
             print("📦 No saved routes yet")
+        }
+    }
+    
+    func addStartPoint(coordinate: CLLocationCoordinate2D, context: ModelContext) {
+          let point = MapPoint(
+              id: UUID().uuidString,
+              title: "Start / End",
+              latitude: coordinate.latitude,
+              longitude: coordinate.longitude,
+              isStartPoint: true,
+              imageName: "start",
+              adress: "Start / End",
+              lastDate: Date()
+          )
+          context.insert(point)
+          try? context.save()
+          places.append(point)
+        print(places.count)
+      }
+    
+    
+    
+    func addManualPoint(
+        coordinate: CLLocationCoordinate2D,
+        title: String,
+        address: String,
+        imageData: Data?,
+        context: ModelContext
+    ) {
+        let fileName: String?
+        if let imageData {
+            let name = UUID().uuidString + ".jpg"
+            fileName = (try? ImageStore.saveJPEG(imageData, fileName: name))
+        } else {
+            fileName = nil
+        }
+
+        let point = MapPoint(
+            id: UUID().uuidString,
+            title: title.isEmpty ? "Place \(places.count + 1)" : title,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            isStartPoint: false,
+            imageName: "pin",
+            adress: address,
+            lastDate: Date(),
+            imagePath: fileName
+        )
+
+        context.insert(point)
+        try? context.save()
+        places.append(point)
+        print(places.count)
+    }
+    
+    func deleteAllLocalData(context: ModelContext) {
+        do {
+            let all = try context.fetch(FetchDescriptor<MapPoint>())
+
+            for p in all {
+                if let path = p.imagePath {   // თუ შენ imagePath იყენებ
+                    ImageStore.delete(path)
+                }
+            }
+
+            all.forEach { context.delete($0) }
+            try context.save()
+
+            places.removeAll()
+            print("✅ Deleted all MapPoint + local photos")
+        } catch {
+            print("❌ Delete all error:", error)
         }
     }
 
